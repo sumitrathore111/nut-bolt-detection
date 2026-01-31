@@ -1,0 +1,17 @@
+# Nut & Bolt Detection - Python Dependencies
+
+# Web Framework
+flask==3.0.0
+flask-cors==4.0.0
+
+# YOLOv8 / Ultralytics
+ultralytics==8.1.0
+
+# Image Processing
+opencv-python==4.9.0.80
+Pillow==10.2.0
+numpy==1.26.3
+
+# Optional: For better performance
+# onnxruntime==1.16.3  # Uncomment if using ONNX model
+# torch==2.1.2         # PyTorch (usually installed with ultralytics)
