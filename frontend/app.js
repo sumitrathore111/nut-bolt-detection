@@ -8,9 +8,11 @@
 // ============================================
 const CONFIG = {
     API_URL: 'http://localhost:5000',
-    DETECTION_INTERVAL: 50,  // ms between detections (50ms = ~20 FPS max)
+    DETECTION_INTERVAL: 300,  // ms between detections (slower = more stable)
     MAX_CANVAS_WIDTH: 640,    // Resize frames for faster processing
-    CONFIDENCE_THRESHOLD: 0.25,
+    CONFIDENCE_THRESHOLD: 0.5,  // Balanced threshold
+    MIN_DETECTION_FRAMES: 2,   // Detection must appear in N frames to show
+    DETECTION_MEMORY: 5,       // Remember detections for N frames
     COLORS: {
         nut: { stroke: '#ffa500', fill: 'rgba(255, 165, 0, 0.2)' },
         bolt: { stroke: '#00bfff', fill: 'rgba(0, 191, 255, 0.2)' },
@@ -32,7 +34,9 @@ const state = {
     frameCount: 0,
     currentFps: 0,
     showLabels: true,
-    showConfidence: true
+    showConfidence: true,
+    detectionHistory: [],  // Store recent detections for stabilization
+    stableDetections: []   // Filtered stable detections
 };
 
 // ============================================
@@ -259,14 +263,68 @@ function startDetectionLoop() {
 
         // Process results
         if (result.success) {
-            drawDetections(result.detections);
-            updateStats(result);
-            updateDetectionsList(result.detections);
+            // Add to detection history for stabilization
+            state.detectionHistory.push(result.detections);
+            if (state.detectionHistory.length > CONFIG.DETECTION_MEMORY) {
+                state.detectionHistory.shift();
+            }
+
+            // Get stable detections (appear in multiple frames)
+            const stableDetections = getStableDetections();
+
+            drawDetections(stableDetections);
+            updateStats({ ...result, detections: stableDetections, total: stableDetections.length });
+            updateDetectionsList(stableDetections);
             state.framesProcessed++;
             elements.framesProcessed.textContent = state.framesProcessed;
         }
 
     }, CONFIG.DETECTION_INTERVAL);
+}
+
+/**
+ * Get stable detections that appear consistently across frames
+ */
+function getStableDetections() {
+    if (state.detectionHistory.length < CONFIG.MIN_DETECTION_FRAMES) {
+        return state.detectionHistory[state.detectionHistory.length - 1] || [];
+    }
+
+    const latestDetections = state.detectionHistory[state.detectionHistory.length - 1] || [];
+    const stableDetections = [];
+
+    for (const det of latestDetections) {
+        let matchCount = 0;
+
+        // Check how many previous frames have a similar detection
+        for (let i = 0; i < state.detectionHistory.length - 1; i++) {
+            const prevFrame = state.detectionHistory[i];
+            for (const prevDet of prevFrame) {
+                if (prevDet.class === det.class && isSimilarBox(det.bbox, prevDet.bbox)) {
+                    matchCount++;
+                    break;
+                }
+            }
+        }
+
+        // Only include if detected in multiple frames
+        if (matchCount >= CONFIG.MIN_DETECTION_FRAMES - 1) {
+            stableDetections.push(det);
+        }
+    }
+
+    return stableDetections;
+}
+
+/**
+ * Check if two bounding boxes are similar (overlap significantly)
+ */
+function isSimilarBox(box1, box2) {
+    const threshold = 50; // pixels tolerance
+    return Math.abs(box1.x1 - box2.x1) < threshold &&
+           Math.abs(box1.y1 - box2.y1) < threshold &&
+           Math.abs(box1.x2 - box2.x2) < threshold &&
+           Math.abs(box1.y2 - box2.y2) < threshold;
 }
 
 /**
@@ -312,26 +370,42 @@ function drawDetections(detections) {
 
     if (!detections || detections.length === 0) return;
 
-    // Calculate scale factor
     const video = elements.webcam;
-    const scaleX = elements.canvas.width / video.videoWidth;
-    const scaleY = elements.canvas.height / video.videoHeight;
 
-    // If we resized the image for API, we need to scale back
-    const apiScaleX = video.videoWidth / CONFIG.MAX_CANVAS_WIDTH;
-    const apiScaleY = apiScaleX; // Maintain aspect ratio
+    // Debug: log detections
+    console.log('Drawing detections:', detections.length, detections);
+
+    // Calculate the actual size that was sent to the API
+    let apiWidth = video.videoWidth;
+    let apiHeight = video.videoHeight;
+
+    if (apiWidth > CONFIG.MAX_CANVAS_WIDTH) {
+        const ratio = CONFIG.MAX_CANVAS_WIDTH / apiWidth;
+        apiWidth = CONFIG.MAX_CANVAS_WIDTH;
+        apiHeight = Math.round(video.videoHeight * ratio);
+    }
+
+    // Scale factors to convert API coordinates back to canvas coordinates
+    const scaleX = elements.canvas.width / apiWidth;
+    const scaleY = elements.canvas.height / apiHeight;
+
+    console.log('Canvas:', elements.canvas.width, 'x', elements.canvas.height);
+    console.log('API size:', apiWidth, 'x', apiHeight);
+    console.log('Scale:', scaleX, scaleY);
 
     detections.forEach(det => {
         const { bbox, class: className, confidence } = det;
 
-        // Scale coordinates
-        const x1 = bbox.x1 * apiScaleX;
-        const y1 = bbox.y1 * apiScaleX;
-        const x2 = bbox.x2 * apiScaleX;
-        const y2 = bbox.y2 * apiScaleX;
+        // Scale coordinates properly using correct scale for each axis
+        const x1 = bbox.x1 * scaleX;
+        const y1 = bbox.y1 * scaleY;
+        const x2 = bbox.x2 * scaleX;
+        const y2 = bbox.y2 * scaleY;
 
         const width = x2 - x1;
         const height = y2 - y1;
+
+        console.log(`Box: ${className} at (${x1.toFixed(0)}, ${y1.toFixed(0)}) size ${width.toFixed(0)}x${height.toFixed(0)}`);
 
         // Get colors
         const colors = CONFIG.COLORS[className] || CONFIG.COLORS.default;
@@ -393,8 +467,8 @@ function updateAPIStatus(isOnline, message) {
  */
 function updateStats(result) {
     elements.totalCount.textContent = result.total || 0;
-    elements.nutCount.textContent = result.counts?.nut || 0;
-    elements.boltCount.textContent = result.counts?.bolt || 0;
+    elements.nutCount.textContent = result.counts?.Nut || result.counts?.nut || 0;
+    elements.boltCount.textContent = result.counts?.Bolt || result.counts?.bolt || 0;
     elements.processingTime.textContent = `${result.processing_time_ms || 0} ms`;
 }
 
